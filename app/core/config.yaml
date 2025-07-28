@@ -1,0 +1,3 @@
+database_details:
+  connection_string: "mongodb://admin:admin123@10.100.3.13:27017/"
+  database_name: "gmr-mro-staging-5y"
