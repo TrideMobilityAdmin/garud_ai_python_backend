@@ -475,7 +475,7 @@ async def defects_prediction(tasks):
         finding = {
             
             "taskId": row["source_cust_card"],
-            "chapterName": "ATA" + str(row["source_cust_card"])[:2],   
+            "chapterName": str(row["source_cust_card"])[:2],   
             "details": [{
                 "cluster": f"{row['source_cust_card']}/{row['group']}",
                 "description": row["description"],
