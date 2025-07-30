@@ -457,6 +457,12 @@ async def defects_prediction(tasks):
     mpd_defects_parts_data = pd.read_sql( parts_query, engine, params={"work_order_and_item_number_list": tuple(work_order_and_item_number_list)})
     cluster_data=compute_cluster(mpd_defects_data,tasks)
     cluster_man_hours_data=manhours_prediction(cluster_data)
+    if cluster_man_hours_data.empty:
+         {
+        "findings": findings,
+        "findings_manhours": float_round(findings_manhours),
+        "findings_spare_parts_cost": float_round(findings_spare_parts_cost)
+        }
     cluster_parts_data=parts_prediction(cluster_data,mpd_defects_parts_data)
     findings=[]
     findings_manhours=0
