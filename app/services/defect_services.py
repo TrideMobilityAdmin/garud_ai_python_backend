@@ -337,6 +337,7 @@ def parts_price(row):
     else:
         return 0
 def parts_prediction(cluster_data,parts_data):
+
     cluster_data_updated = cluster_data.merge(
             parts_data[
                 ['work_order_and_item_number', 'part_number',
@@ -348,6 +349,10 @@ def parts_prediction(cluster_data,parts_data):
             how="left"
         )
             # Group and aggregate
+    if parts_data.empty or cluster_data.empty or cluster_data_updated.empty:
+        return pd.DataFrame(columns=['source_cust_card', 'group', 'part_number', 'avg_used_qty',
+       'max_used_qty', 'min_used_qty', 'unit_cost', 'total_used_qty',
+       'part_description', 'group_code', 'work_orders', 'prob', 'total_cost','part_type'])
     group_level_parts = cluster_data_updated.groupby(
             ["source_cust_card", "group", "part_number", "work_order"]
         ).agg(

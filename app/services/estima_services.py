@@ -431,6 +431,7 @@ def parts_price(row):
     else:
         return 0
 def parts_prediction(cluster_data,sub_task_parts_lhrh):
+    
     group_level_parts = cluster_data.merge(
             sub_task_parts_lhrh[
                 ['task_number', 'issued_part_number','part_description',
@@ -443,8 +444,11 @@ def parts_prediction(cluster_data,sub_task_parts_lhrh):
         ).drop(columns=["task_number"])  # Drop duplicate column
             # Group and aggregate
         # Get all unique package numbers
-    all_package_numbers = group_level_parts["package_number"].unique()
 
+    if group_level_parts.empty or sub_task_parts_lhrh.empty or cluster_data.empty:
+        return pd.DataFrame(columns=['source_task_discrepancy_number', 'group', 'issued_part_number',
+       'avg_used_qty', 'max_used_qty', 'min_used_qty', 'latest_price',
+       'total_billable_value_usd', 'total_used_qty', 'part_description','prob', 'billable_value_usd'])    
 
     # Group and aggregate
     group_level_parts = group_level_parts.groupby(
