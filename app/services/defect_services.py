@@ -452,10 +452,28 @@ async def defects_prediction(tasks):
     
     defects_query = "SELECT * FROM mpd_defects_data WHERE source_cust_card IN %(tasks)s"
     mpd_defects_data = pd.read_sql(defects_query, engine, params={"tasks": tuple(tasks)})
+    if mpd_defects_data.empty:
+        return {
+            "findings": [],
+            "findings_manhours": 0.0,
+            "findings_spare_parts_cost": 0.0
+        }
     work_order_and_item_number_list=mpd_defects_data["work_order_and_item_number"].unique().tolist()
     parts_query="SELECT * FROM historical_parts_data WHERE work_order_and_item_number IN %(work_order_and_item_number_list)s"
     mpd_defects_parts_data = pd.read_sql( parts_query, engine, params={"work_order_and_item_number_list": tuple(work_order_and_item_number_list)})
+    if mpd_defects_parts_data.empty:
+        return {
+            "findings": [],
+            "findings_manhours": 0.0,
+            "findings_spare_parts_cost": 0.0
+        }
     cluster_data=compute_cluster(mpd_defects_data,tasks)
+    if cluster_data.empty:
+        return {
+            "findings": [],
+            "findings_manhours": 0.0,
+            "findings_spare_parts_cost": 0.0
+        }
     cluster_man_hours_data=manhours_prediction(cluster_data)
     if cluster_man_hours_data.empty:
          {
