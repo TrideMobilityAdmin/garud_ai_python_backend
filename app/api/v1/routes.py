@@ -1,6 +1,6 @@
 from typing import List
 from fastapi import APIRouter, HTTPException, status
-from app.services.estima_services import defect_investigator, most_probable_defects
+from app.services.estima_services import defect_investigator, most_probable_defects,event_log_management
 from app.services.defect_services import defects_prediction
 from app.models.models import TasksInput, MostProbableDefectsInput, DefectInvestigatorInput
 
@@ -14,7 +14,6 @@ async def most_probable_defects_route(payload: MostProbableDefectsInput):
     if (
         not payload.aircraft_model or 
         not payload.check_category or 
-        not payload.aircraft_age or 
         not payload.customer_name or 
         payload.customer_name_consideration is None
     ):
@@ -68,4 +67,18 @@ async def defects_prediction_route(payload: TasksInput):
         )
 
     result = await defects_prediction(payload.tasks)
+    return result
+@router.get("/hanger_planning")
+async def hanger_planning_route():
+    """
+    Endpoint to get hanger planning data.
+    """
+    # Placeholder for hanger planning logic
+    result=await event_log_management()
+    if result is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No hanger planning data found."
+        )
+    
     return result

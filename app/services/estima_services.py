@@ -12,7 +12,8 @@ import inflect
 from typing import List, Dict, Set
 import json
 from pymongo import MongoClient
-
+import math
+import re
 import gc
 import string
 import datetime
@@ -37,7 +38,10 @@ config= load_config()
 database_details = config["database_details"]
 client =MongoClient(database_details['connection_string'])
 db = client[database_details['database_name']]
-
+keywords_collection = db["keywords"]
+keywords_df = pd.DataFrame(list(keywords_collection.find({})))
+keywords_dict = keywords_df.set_index("Abbreviation")["Meaning"].to_dict()
+keyword_set = set(keywords_df["Meaning"].str.lower().tolist())  # Normalize to lowercase
 aircraft_collection = db["aircraft_details"]
 aircraft_details = pd.DataFrame(list(aircraft_collection.find({})))
 sub_task_description_max500mh_lhrh = db["sub_task_description_max500mh_lhrh"]
@@ -49,6 +53,8 @@ parts_master = list(parts_master.find({},))
 parts_master= pd.DataFrame(parts_master)
 parts_master = parts_master.drop(columns=["_id"], errors="ignore")
 parts_master=parts_master.drop_duplicates()
+aircraft_event_log= db["aircraft_event_log"]
+aircraft_event_log = pd.DataFrame(list(aircraft_event_log.find({})))
 def float_round(value):
     if pd.notna(value):  # Better check for non-null values
         return round(float(value), 2)
@@ -94,6 +100,45 @@ def compute_tfidf(corpus: list, preserve_symbols=['-', '/']) -> list:
 
     return embeddings.toarray()
 
+def keyword_extraction(text: str,  n_keywords: int = 7) -> List[str]:
+    """
+    Extract top-n relevant keywords from text that exist in the MongoDB 'keywords' collection.
+
+    Args:
+        text (str): The input text from which to extract keywords.
+        db: The MongoDB database object.
+        n_keywords (int): The number of keywords to extract.
+
+    Returns:
+        List[str]: A list of filtered, high-scoring keywords.
+    """
+
+    # Preprocess the text
+    preprocessed_text = preprocess_text(text,words_to_remove=[])
+    for meaning, abbr in keywords_dict.items():
+        # Use regex word boundary to avoid partial matches
+        pattern = r'\b' + re.escape(meaning) + r'\b'
+        preprocessed_text  = re.sub(pattern, abbr, preprocessed_text )
+    # Create a TF-IDF vectorizer
+    vectorizer = TfidfVectorizer(stop_words='english')
+
+    # Fit and transform the text
+    tfidf_matrix = vectorizer.fit_transform([preprocessed_text])
+
+    # Extract TF-IDF features and scores
+    feature_names = vectorizer.get_feature_names_out()
+    scores = tfidf_matrix.toarray()[0]
+    keyword_scores = dict(zip(feature_names, scores))
+
+    # Filter by keywords present in MongoDB
+    filtered_keywords = {
+        k: v for k, v in keyword_scores.items() if k.lower() in keyword_set
+    }
+
+    # Sort and return top n_keywords
+    sorted_keywords = sorted(filtered_keywords.items(), key=lambda x: x[1], reverse=True)
+
+    return [keyword for keyword, score in sorted_keywords[:n_keywords]]
 
 def threshold_transform(data: np.ndarray, threshold: float = 0.5, above_value: int = 1, below_value: int = 0) -> np.ndarray:
     """Apply a threshold transformation to data."""
@@ -432,6 +477,11 @@ def parts_price(row):
         return 0
 def parts_prediction(cluster_data,sub_task_parts_lhrh):
     
+    if cluster_data.empty or sub_task_parts_lhrh.empty :
+        return pd.DataFrame(columns=['source_task_discrepancy_number', 'group', 'issued_part_number',
+       'avg_used_qty', 'max_used_qty', 'min_used_qty', 'latest_price',
+       'total_billable_value_usd', 'total_used_qty', 'part_description','prob', 'billable_value_usd'])    
+    
     group_level_parts = cluster_data.merge(
             sub_task_parts_lhrh[
                 ['task_number', 'issued_part_number','part_description',
@@ -445,7 +495,7 @@ def parts_prediction(cluster_data,sub_task_parts_lhrh):
             # Group and aggregate
         # Get all unique package numbers
 
-    if group_level_parts.empty or sub_task_parts_lhrh.empty or cluster_data.empty:
+    if group_level_parts.empty :
         return pd.DataFrame(columns=['source_task_discrepancy_number', 'group', 'issued_part_number',
        'avg_used_qty', 'max_used_qty', 'min_used_qty', 'latest_price',
        'total_billable_value_usd', 'total_used_qty', 'part_description','prob', 'billable_value_usd'])    
@@ -524,6 +574,10 @@ def parts_prediction(cluster_data,sub_task_parts_lhrh):
 
     # Apply probability
     print("the shape of the parts data is", group_level_parts_result.shape)
+    if group_level_parts_result.empty:
+        return pd.DataFrame(columns=['source_task_discrepancy_number', 'group', 'issued_part_number',
+       'avg_used_qty', 'max_used_qty', 'min_used_qty', 'latest_price',
+       'total_billable_value_usd', 'total_used_qty', 'part_description','prob', 'billable_value_usd'])
     group_level_parts_result["prob"] = group_level_parts_result.apply(
         lambda row: prob(row), axis=1
     )
@@ -557,6 +611,7 @@ async def most_probable_defects(aircraft_age: float, aircraft_model_family: List
     sub_task_description_max500mh_lhrh=pd.DataFrame(list(db["sub_task_description_max500mh_lhrh"].find({"package_number": {"$in": train_packages}})))
     #sub_task_description_max500mh_lhrh=sub_task_description_max500mh_lhrh[sub_task_description_max500mh_lhrh['package_number'].isin(train_packages)]
     tasks=sub_task_description_max500mh_lhrh["source_task_discrepancy_number_updated"].unique().tolist()
+    defects_list = sub_task_description_max500mh_lhrh["log_item_number"].unique().tolist()
     sub_task_description_max500mh_lhrh=sub_task_description_max500mh_lhrh[['log_item_number',
                 'task_description', 'corrective_action',
             'source_task_discrepancy_number','source_task_discrepancy_number_updated', 'estimated_man_hours', 
@@ -565,17 +620,23 @@ async def most_probable_defects(aircraft_age: float, aircraft_model_family: List
     sub_task_parts_lhrh = pd.DataFrame(
     list(db["sub_task_parts_lhrh"].find({
         "package_number": {"$in": train_packages},
-        "task_number": {"$in": tasks}
+        "task_number": {"$in": defects_list}
     }))
     )
     sub_task_parts_lhrh["latest_price"] = sub_task_parts_lhrh["issued_part_number"].apply(
     lambda x: parts_master.loc[parts_master["issued_part_number"] == x, "latest_total_billable_price"].values[0] if x in parts_master["issued_part_number"].values else 0
     )
-    print("the shaoe of the parts data is",sub_task_parts_lhrh.shape)
+    print("the shape of the parts data is",sub_task_parts_lhrh.shape)
     cluster_parts_data=parts_prediction(cluster_data[["log_item_number","source_task_discrepancy_number","group", "package_number"]],sub_task_parts_lhrh)
-    top_failing_parts = cluster_parts_data.groupby("issued_part_number").agg(
-    total_cost=("billable_value_usd", "sum")
-    ).reset_index()
+    cluster_parts_data["parts_cost"] = cluster_parts_data["billable_value_usd"] * (cluster_parts_data["prob"] / 100)
+
+    # Group by 'issued_part_number' and 'part_description', then sum the 'parts_cost'
+    top_failing_parts = cluster_parts_data.groupby(
+        ["issued_part_number", "part_description"], as_index=False
+    ).agg(
+        total_cost=("parts_cost", "sum")
+    )
+
 
     top_failing_parts = top_failing_parts.sort_values(by="total_cost", ascending=False).head(10)
         
@@ -594,7 +655,7 @@ async def most_probable_defects(aircraft_age: float, aircraft_model_family: List
         spare_parts = []
         spare_filtered = cluster_parts_data[cluster_parts_data["group"] == row["group"]] 
         for _, part in spare_filtered.iterrows():
-            findings_spare_parts_cost += (part["price"]  * prob_factor)
+            findings_spare_parts_cost += (part["billable_value_usd"]  * prob_factor)
             spare_parts.append({
                 "partId": part["issued_part_number"],
                 "desc": part["part_description"],
@@ -626,10 +687,13 @@ async def most_probable_defects(aircraft_age: float, aircraft_model_family: List
         findings.append(finding)
     result = {
         "findings": findings,
-        "findings_manhours": float_round(findings_manhours),
-        "findings_spare_parts_cost": float_round(findings_spare_parts_cost),
-        "total_findings": len(sub_task_description_max500mh_lhrh["log_item_number"].unique()),
-        "total_clusters": len(cluster_data["group"].unique()),
+        "findings_summary": {
+            "total_findings": len(findings),
+            "total_manhours": float_round(findings_manhours),
+            "total_spare_parts_cost": float_round(findings_spare_parts_cost),
+            "total_clusters": len(cluster_data["group"].unique())
+        },
+        
         "top_failing_parts":top_failing_parts.to_dict(orient='records')  # Convert DataFrame to list of dicts
         
     }
@@ -642,9 +706,16 @@ async def defect_investigator(task_number: List[str], log_item_number: str, defe
 
     # If you're matching a single task number, use a string instead of a list
     task_number_str = task_number[0]
+    print("data is being processed for task number:", task_number_str)
 
     # Filter the dataframe correctly
-    exdata = pd.DataFrame(list(sub_task_description_max500mh_lhrh.find({"source_task_discrepancy_number_updated": task_number_str})))
+    exdata = pd.DataFrame(
+        list(sub_task_description_max500mh_lhrh.find(
+            {"source_task_discrepancy_number_updated": task_number_str},
+            {"_id": 0}
+        ))
+    )
+
 
     # Prepare input data as a DataFrame row
     input_data = {
@@ -661,22 +732,142 @@ async def defect_investigator(task_number: List[str], log_item_number: str, defe
 
     # Append the input_data as a new row to exdata (returns a new DataFrame)
     exdata = pd.concat([exdata, pd.DataFrame([input_data])], ignore_index=True)
-
+    print("cluster data is being computed for task number:", task_number_str)
     # Assuming `tasks` is defined somewhere above or is a column name in the DataFrame
     cluster_data = compute_cluster(exdata , task_number)
-    
+    print("cluster data is computed for task number:", task_number_str)
     # Ensure log_item_number is a string if comparing with string column
     log_item_number = str(log_item_number)
     # Filter the cluster data where 'log_item_number' matches
     group_number=cluster_data[cluster_data["log_item_number"] == log_item_number]["group"].iloc[0]
 
     similar_defect_data=cluster_data[cluster_data["group"] == group_number]
+    similar_defect_data=similar_defect_data[similar_defect_data["log_item_number"] != log_item_number]
+    defects_list = similar_defect_data["log_item_number"].unique().tolist()
+    sub_task_parts_lhrh = pd.DataFrame(
+    list(db["sub_task_parts_lhrh"].find({
+        "task_number": {"$in": defects_list}
+    }))
+    )
+    if not sub_task_parts_lhrh.empty:
+        sub_task_parts_lhrh["latest_price"] = sub_task_parts_lhrh["issued_part_number"].apply(
+        lambda x: parts_master.loc[parts_master["issued_part_number"] == x, "latest_total_billable_price"].values[0] if x in parts_master["issued_part_number"].values else 0
+        )
+    print("the shape of the parts data is",sub_task_parts_lhrh.shape)
+    cluster_parts_data=parts_prediction(similar_defect_data[["log_item_number","source_task_discrepancy_number","group", "package_number"]],sub_task_parts_lhrh)
+    cluster_manhours_data=manhours_prediction(similar_defect_data[[
+    "source_task_discrepancy_number","full_description",
+    "actual_man_hours",
+    "skill_number",
+    "group",
+    "package_number"
+    ]])
+    findings=[]
+    findings_manhours=0
+    findings_spare_parts_cost=0
+    # Join all full_description entries into one text string
+    findings_text = similar_defect_data["full_description"].str.cat(sep=" ")
+
+    # Extract keywords (assuming db is available in context)
+    keywords_list = keyword_extraction(findings_text, n_keywords=10)
+
+    for _, row in cluster_manhours_data.iterrows():
+        spare_parts = []
+        spare_filtered = cluster_parts_data[cluster_parts_data["group"] == row["group"]] 
+        for _, part in spare_filtered.iterrows():
+            findings_spare_parts_cost += (part["billable_value_usd"]  * (part["prob"] / 100))
+            spare_parts.append({
+                "partId": part["issued_part_number"],
+                "desc": part["part_description"],
+                "qty": float_round(part["avg_used_qty"]),
+                "price": float_round(part["billable_value_usd"]),
+                "prob": float_round(part["prob"])
+            })
+
+        # Calculate probability-adjusted values for disc_pred_list
+        prob_factor = row["prob"] / 100
+        finding = {
+            "taskId": row["source_task_discrepancy_number"],
+            "details": [{
+                "cluster": f"{row['source_task_discrepancy_number']}/{row['group']}",
+                "description": row["description"],
+                "skill": row["skill_number"],
+                "mhs": {
+                    "max": float_round(row["max_actual_man_hours"]),
+                    "min": float_round(row["min_actual_man_hours"]),
+                    "avg": float_round(row["avg_actual_man_hours"]),
+                    "est": float_round(row["max_actual_man_hours"])
+                },
+                "prob": float_round(row["prob"]),
+                "spare_parts": spare_parts
+            }]
+        }
+        findings_manhours += row["avg_actual_man_hours"] * prob_factor
+        
+        findings.append(finding)
+    result = {
+        "findings": findings,
+        "findings_summary": {
+            "total_findings": len(findings),
+            "total_manhours": float_round(findings_manhours),
+            "total_spare_parts_cost": float_round(findings_spare_parts_cost),
+            "total_clusters": len(cluster_data["group"].unique())
+        },
+        "keywords": keywords_list,
+        "findings_raw_data":similar_defect_data.to_dict(orient='records')
+        
+   
+        
+    }
     # Convert the result to a dictionary
-    result = similar_defect_data.to_dict(orient='records')  # returns a list of dicts
+    print("preprocessing the result for task number:", task_number_str)
     result = replace_nan_inf(result)
     return result
     
-import math
+async def event_log_management():
+    response = {
+        "planned": [],
+        "closed": [],
+        "prepared": [],
+        "in_progress": []
+    }
+
+    for index, row in aircraft_event_log.iterrows():
+        event_details = {
+            'system_component': row['system_component_csdd'],
+            'aircraft_reg': row['aircraft_reg'],
+            'description': row['description'],
+            'source_system': row['source_system'],
+            'reference': row['reference'],
+            'category': row['category'],
+            'status': row['status'],
+            'severity': row['severity'],
+            'model': row['model'],
+            'age': row['age'],
+            'mel_cdl_applicable': row['mel_cdl_applicable'],
+            'dispatch_allowed': row['dispatch_allowed'],
+            'estimated_man_hours': row['approx_resolution_time'],
+            'limitation_action': row['limitation_action'],
+            'diagnosis_1': row['diagnosis_1'],
+            'diagnosis_1_probability': row['diagnosis_1_probability'],
+            'diagnosis_2': row['diagnosis_2'],
+            'diagnosis_2_probability': row['diagnosis_2_probability']
+        }
+
+        status = row['status'].lower()
+
+        if status == "open":
+            response["planned"].append(event_details)
+        elif status == "closed":
+            event_details["actual_man_hours"] = row['approx_resolution_time']*1.5
+            response["closed"].append(event_details)
+        elif status == "prepared":
+            response["prepared"].append(event_details)
+        elif status in ["in_progress", "in progress"]:  # handle both forms
+            response["in_progress"].append(event_details)
+
+    return response
+
 
 def replace_nan_inf(obj):
     """
