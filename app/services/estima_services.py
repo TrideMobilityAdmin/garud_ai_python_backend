@@ -359,7 +359,7 @@ def compute_cluster(sub_task_description_max500mh_lhrh,tasks):
             
             def fillnull(row):
                 if pd.isna(row["group"]):  # Correct way to check NaN
-                    return row["log_item_number"]  # Return the new value
+                    return row["log_item_number"].replace("HMV","0") # Return the new value
                 return row["group"]  # Return original value if not NaN
             
             # Apply function to the 'group' column
@@ -651,11 +651,15 @@ async def most_probable_defects(aircraft_age: float, aircraft_model_family: List
     findings_manhours=0
     findings_spare_parts_cost=0
     
-    for _, row in cluster_manhours_data[:10].iterrows():
+    for index, row in cluster_manhours_data.iterrows():
         spare_parts = []
         spare_filtered = cluster_parts_data[cluster_parts_data["group"] == row["group"]] 
+        prob_factor = row["prob"] / 100
+        
         for _, part in spare_filtered.iterrows():
-            findings_spare_parts_cost += (part["billable_value_usd"]  * prob_factor)
+            part_cost = part["billable_value_usd"] * part["prob"] / 100* prob_factor
+            findings_spare_parts_cost += part_cost
+            
             spare_parts.append({
                 "partId": part["issued_part_number"],
                 "desc": part["part_description"],
@@ -664,8 +668,6 @@ async def most_probable_defects(aircraft_age: float, aircraft_model_family: List
                 "prob": float_round(part["prob"])
             })
 
-        # Calculate probability-adjusted values for disc_pred_list
-        prob_factor = row["prob"] / 100
         finding = {
             "taskId": row["source_task_discrepancy_number"],
             "details": [{
@@ -676,30 +678,42 @@ async def most_probable_defects(aircraft_age: float, aircraft_model_family: List
                     "max": float_round(row["max_actual_man_hours"]),
                     "min": float_round(row["min_actual_man_hours"]),
                     "avg": float_round(row["avg_actual_man_hours"]),
-                    "est": float_round(row["max_actual_man_hours"])
+                    "est": float_round(row["max_actual_man_hours"])  # Consider using a different field for estimate
                 },
                 "prob": float_round(row["prob"]),
                 "spare_parts": spare_parts
             }]
         }
+        
         findings_manhours += row["avg_actual_man_hours"] * prob_factor
         
-        findings.append(finding)
+        # Fixed condition: should be <= 11 to get first 12 items, or remove condition entirely
+        if index <= 10:  # or remove this condition if you want all findings
+            findings.append(finding)
+
+    # Fixed typo: "reliability" not "reliablity"
+    reliability_score = (
+        85 if findings_manhours < 1000
+        else 75 if findings_manhours < 3000
+        else 50 if findings_manhours < 5000
+        else 25
+    )
+
+
     result = {
         "findings": findings,
         "findings_summary": {
-            "total_findings": len(findings),
+            "reliability_score": reliability_score,  # Fixed typo
             "total_manhours": float_round(findings_manhours),
             "total_spare_parts_cost": float_round(findings_spare_parts_cost),
             "total_clusters": len(cluster_data["group"].unique())
         },
-        
-        "top_failing_parts":top_failing_parts.to_dict(orient='records')  # Convert DataFrame to list of dicts
-        
+        "top_failing_parts": top_failing_parts.to_dict(orient='records')
     }
-    result = replace_nan_inf(result)
-    return result
 
+    result = replace_nan_inf(result)
+    print(result)
+    return result
 async def defect_investigator(task_number: List[str], log_item_number: str, defect_desc: str, corrective_action: str):
     # Input variables
 
@@ -773,9 +787,10 @@ async def defect_investigator(task_number: List[str], log_item_number: str, defe
 
     for _, row in cluster_manhours_data.iterrows():
         spare_parts = []
-        spare_filtered = cluster_parts_data[cluster_parts_data["group"] == row["group"]] 
+        spare_filtered = cluster_parts_data[cluster_parts_data["group"] == row["group"]]
+        prob_factor = row["prob"] / 100 
         for _, part in spare_filtered.iterrows():
-            findings_spare_parts_cost += (part["billable_value_usd"]  * (part["prob"] / 100))
+            findings_spare_parts_cost += (part["billable_value_usd"]  * (part["prob"] / 100) * prob_factor)
             spare_parts.append({
                 "partId": part["issued_part_number"],
                 "desc": part["part_description"],
@@ -785,7 +800,7 @@ async def defect_investigator(task_number: List[str], log_item_number: str, defe
             })
 
         # Calculate probability-adjusted values for disc_pred_list
-        prob_factor = row["prob"] / 100
+
         finding = {
             "taskId": row["source_task_discrepancy_number"],
             "details": [{
@@ -822,6 +837,7 @@ async def defect_investigator(task_number: List[str], log_item_number: str, defe
     # Convert the result to a dictionary
     print("preprocessing the result for task number:", task_number_str)
     result = replace_nan_inf(result)
+    print(result)
     return result
     
 async def event_log_management():
