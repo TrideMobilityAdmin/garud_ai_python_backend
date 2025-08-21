@@ -1,6 +1,6 @@
 from typing import List
 from fastapi import APIRouter, HTTPException, status
-from app.services.estima_services import defect_investigator, most_probable_defects,event_log_management
+from app.services.estima_services import defect_investigator, most_probable_defects,event_log_management,estima_defects_prediction
 from app.services.defect_services import defects_prediction
 from app.models.models import TasksInput, MostProbableDefectsInput, DefectInvestigatorInput
 
@@ -66,7 +66,7 @@ async def defects_prediction_route(payload: TasksInput):
             detail="Tasks are required for defect prediction."
         )
 
-    result = await defects_prediction(payload.tasks)
+    result = await estima_defects_prediction(payload.tasks)
     return result
 @router.get("/hanger_planning")
 async def hanger_planning_route():

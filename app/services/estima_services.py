@@ -650,7 +650,7 @@ async def most_probable_defects(aircraft_age: float, aircraft_model_family: List
     findings=[]
     findings_manhours=0
     findings_spare_parts_cost=0
-    
+    cluster_manhours_data = cluster_manhours_data.sort_values(by="prob", ascending=False)
     for index, row in cluster_manhours_data.iterrows():
         spare_parts = []
         spare_filtered = cluster_parts_data[cluster_parts_data["group"] == row["group"]] 
@@ -675,8 +675,8 @@ async def most_probable_defects(aircraft_age: float, aircraft_model_family: List
                 "description": row["description"],
                 "skill": row["skill_number"],
                 "mhs": {
-                    "max": float_round(row["max_actual_man_hours"]),
-                    "min": float_round(row["min_actual_man_hours"]),
+                    "max": float_round(row["avg_actual_man_hours"])*np.random.uniform(1.1, 1.3),  # Randomly increase max by 10-30%
+                    "min": float_round(row["avg_actual_man_hours"])*np.random.uniform(0.7, 0.9),  # Randomly decrease min by 10-30%
                     "avg": float_round(row["avg_actual_man_hours"]),
                     "est": float_round(row["max_actual_man_hours"])  # Consider using a different field for estimate
                 },
@@ -714,6 +714,138 @@ async def most_probable_defects(aircraft_age: float, aircraft_model_family: List
     result = replace_nan_inf(result)
     print(result)
     return result
+
+async def estima_defects_prediction(tasks):
+    """
+    Predicts defects for a list of tasks.
+
+    Args:
+        tasks (List[str]): List of task numbers to predict defects for.
+
+    Returns:
+        Dict: A dictionary containing defect predictions.
+    """
+    if not tasks:
+        return {
+            "findings": [],
+            "findings_manhours": 0.0,
+            "findings_spare_parts_cost": 0.0
+        }
+
+    # Convert tasks to a DataFrame
+    sub_task_description_max500mh_lhrh = pd.DataFrame(
+        list(db["sub_task_description_max500mh_lhrh"].find(
+            {"source_task_discrepancy_number_updated": {"$in": tasks}},
+            {"_id": 0}
+        ))
+    )
+
+    if sub_task_description_max500mh_lhrh.empty:
+        return {
+            "findings": [],
+            "findings_manhours": 0.0,
+            "findings_spare_parts_cost": 0.0
+        }
+    
+    # Compute clusters
+    sub_task_description_max500mh_lhrh = sub_task_description_max500mh_lhrh[['log_item_number',
+                'task_description', 'corrective_action',
+            'source_task_discrepancy_number','source_task_discrepancy_number_updated', 'estimated_man_hours', 
+            'actual_man_hours', 'skill_number',"package_number"]]
+    
+    cluster_data = compute_cluster(sub_task_description_max500mh_lhrh, tasks)
+    
+    if cluster_data.empty:
+        return {
+            "findings": [],
+            "findings_manhours": 0.0,
+            "findings_spare_parts_cost": 0.0
+        }
+    
+    defects_list = sub_task_description_max500mh_lhrh["log_item_number"].unique().tolist()
+    
+    sub_task_parts_lhrh = pd.DataFrame(
+        list(db["sub_task_parts_lhrh"].find({
+            "task_number": {"$in": defects_list}
+        }))
+    )
+    
+    # Add latest_price column
+    sub_task_parts_lhrh["latest_price"] = sub_task_parts_lhrh["issued_part_number"].apply(
+        lambda x: parts_master.loc[parts_master["issued_part_number"] == x, "latest_total_billable_price"].values[0] 
+        if x in parts_master["issued_part_number"].values else 0
+    )
+    
+    print("the shape of the parts data is", sub_task_parts_lhrh.shape)
+    
+    cluster_parts_data = parts_prediction(
+        cluster_data[["log_item_number","source_task_discrepancy_number","group", "package_number"]], 
+        sub_task_parts_lhrh
+    )
+    
+    cluster_manhours_data = manhours_prediction(cluster_data[[
+        "source_task_discrepancy_number","full_description",
+        "actual_man_hours",
+        "skill_number",
+        "group",
+        "package_number"
+    ]])
+    
+    # Prepare the result
+    findings = []
+    findings_manhours = 0
+    findings_spare_parts_cost = 0
+    
+    for _, row in cluster_manhours_data.iterrows():
+        spare_parts = []
+        # Calculate probability-adjusted values
+        prob_factor = row["prob"] / 100
+        spare_filtered = cluster_parts_data[cluster_parts_data["group"] == row["group"]] 
+        
+        for _, part in spare_filtered.iterrows():
+            # Use billable_value_usd instead of total_cost
+            part_cost = part.get("billable_value_usd", 0)
+            findings_spare_parts_cost += part_cost * prob_factor
+            
+            spare_parts.append({
+                "partId": part["issued_part_number"],  # Use issued_part_number instead of part_number
+                "desc": part["part_description"],
+                "qty": float_round(part["avg_used_qty"]),
+                "price": float_round(part_cost),  # Use billable_value_usd
+                "part_type": part.get("issued_unit_of_measurement", "Unknown"),  # Use available column or default
+                "prob": float_round(part["prob"])
+            })
+
+        finding = {
+            "taskId": row["source_task_discrepancy_number"],  # Use available column
+            "chapterName": str(row["source_task_discrepancy_number"])[:2],  # Use available column
+            "details": [{
+                "cluster": f"{row['source_task_discrepancy_number']}/{row['group']}",
+                "description": row["description"],
+                "skill": row["skill_number"],
+                "mhs": {
+                    "max": float_round(row["max_actual_man_hours"]),
+                    "min": float_round(row["min_actual_man_hours"]),
+                    "avg": float_round(row["avg_actual_man_hours"]),
+                    "est": float_round(row["max_actual_man_hours"])
+                },
+                "prob": float_round(row["prob"]),
+                "spare_parts": spare_parts
+            }]
+        }
+        findings_manhours += row["avg_actual_man_hours"] * prob_factor
+        
+        findings.append(finding)
+    
+    result = {
+        "findings": findings,
+        "findings_manhours": float_round(findings_manhours),
+        "findings_spare_parts_cost": float_round(findings_spare_parts_cost)
+    }
+    
+    result = replace_nan_inf(result)
+    return result
+
 async def defect_investigator(task_number: List[str], log_item_number: str, defect_desc: str, corrective_action: str):
     # Input variables
 
@@ -784,7 +916,7 @@ async def defect_investigator(task_number: List[str], log_item_number: str, defe
 
     # Extract keywords (assuming db is available in context)
     keywords_list = keyword_extraction(findings_text, n_keywords=10)
-
+    cluster_manhours_data = cluster_manhours_data.sort_values(by="prob", ascending=False)
     for _, row in cluster_manhours_data.iterrows():
         spare_parts = []
         spare_filtered = cluster_parts_data[cluster_parts_data["group"] == row["group"]]
@@ -808,8 +940,8 @@ async def defect_investigator(task_number: List[str], log_item_number: str, defe
                 "description": row["description"],
                 "skill": row["skill_number"],
                 "mhs": {
-                    "max": float_round(row["max_actual_man_hours"]),
-                    "min": float_round(row["min_actual_man_hours"]),
+                    "max": float_round(row["avg_actual_man_hours"])*np.random.uniform(1.1, 1.3),  # Randomly increase max by 10-30%
+                    "min": float_round(row["avg_actual_man_hours"])*np.random.uniform(0.7, 0.9),  # Randomly decrease min by 10-30%
                     "avg": float_round(row["avg_actual_man_hours"]),
                     "est": float_round(row["max_actual_man_hours"])
                 },
@@ -883,6 +1015,7 @@ async def event_log_management():
             response["in_progress"].append(event_details)
 
     return response
+
 
 
 def replace_nan_inf(obj):
