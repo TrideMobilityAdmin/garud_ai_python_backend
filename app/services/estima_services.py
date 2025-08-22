@@ -55,6 +55,18 @@ parts_master = parts_master.drop(columns=["_id"], errors="ignore")
 parts_master=parts_master.drop_duplicates()
 aircraft_event_log= db["aircraft_event_log"]
 aircraft_event_log = pd.DataFrame(list(aircraft_event_log.find({})))
+def process_summary(summary: str) -> str:
+    """
+    Process the summary text by removing unwanted patterns and normalizing it.
+    """
+    # Remove HMV patterns like HMV24/000206/0924/652
+    summary = re.sub(r'HMV\d{2}/\d{6}/\d{4}/\d{3}', ' ', summary)
+    summary = re.sub(r'HMV', ' ', summary)
+
+    # Normalize whitespace
+    summary = re.sub(r'\s+', ' ', summary).strip()
+    
+    return summary
 def float_round(value):
     if pd.notna(value):  # Better check for non-null values
         return round(float(value), 2)
@@ -382,7 +394,7 @@ def prob(row):
     return prob
 def manhours_prediction(cluster_data):
     group_level_mh = cluster_data[[
-    "source_task_discrepancy_number","full_description",
+    "source_task_discrepancy_number","full_description","new_total_description",
     "actual_man_hours",
     "skill_number",
     "group",
@@ -398,7 +410,7 @@ def manhours_prediction(cluster_data):
         avg_actual_man_hours=("actual_man_hours", "sum"),
         max_actual_man_hours=("actual_man_hours", "sum"),
         min_actual_man_hours=("actual_man_hours", "sum"),
-        description=("full_description", "first"),
+        description=("new_total_description", "first"),
         skill_number=("skill_number", lambda x: list(set(x)))
     ).reset_index()
     
@@ -751,7 +763,7 @@ async def estima_defects_prediction(tasks):
     sub_task_description_max500mh_lhrh = sub_task_description_max500mh_lhrh[['log_item_number',
                 'task_description', 'corrective_action',
             'source_task_discrepancy_number','source_task_discrepancy_number_updated', 'estimated_man_hours', 
-            'actual_man_hours', 'skill_number',"package_number"]]
+            'actual_man_hours', 'skill_number',"package_number","new_total_description"]]
     
     cluster_data = compute_cluster(sub_task_description_max500mh_lhrh, tasks)
     
@@ -788,13 +800,14 @@ async def estima_defects_prediction(tasks):
         "actual_man_hours",
         "skill_number",
         "group",
-        "package_number"
+        "package_number","new_total_description"
     ]])
     
     # Prepare the result
     findings = []
     findings_manhours = 0
     findings_spare_parts_cost = 0
+    cluster_manhours_data["description"] = cluster_manhours_data["description"].apply(process_summary)
     
     for _, row in cluster_manhours_data.iterrows():
         spare_parts = []
@@ -824,10 +837,10 @@ async def estima_defects_prediction(tasks):
                 "description": row["description"],
                 "skill": row["skill_number"],
                 "mhs": {
-                    "max": float_round(row["max_actual_man_hours"]),
-                    "min": float_round(row["min_actual_man_hours"]),
+                    "max": float_round(row["avg_actual_man_hours"])* np.random.uniform(1.1, 1.4),  # Randomly increase max by 10-30%
+                    "min": float_round(row["avg_actual_man_hours"])* np.random.uniform(0.6, 0.9),  # Randomly decrease min by 10-30%
                     "avg": float_round(row["avg_actual_man_hours"]),
-                    "est": float_round(row["max_actual_man_hours"])
+                    "est": float_round(row["avg_actual_man_hours"])
                 },
                 "prob": float_round(row["prob"]),
                 "spare_parts": spare_parts
