@@ -837,8 +837,8 @@ async def estima_defects_prediction(tasks):
                 "description": row["description"],
                 "skill": row["skill_number"],
                 "mhs": {
-                    "max": float_round(row["avg_actual_man_hours"])* np.random.uniform(1.1, 1.4),  # Randomly increase max by 10-30%
-                    "min": float_round(row["avg_actual_man_hours"])* np.random.uniform(0.6, 0.9),  # Randomly decrease min by 10-30%
+                    "max": int(round(float_round(row["avg_actual_man_hours"]) * np.random.uniform(1.1, 1.4))),  # Randomly increase max by 10-30%
+                    "min": int(round(float_round(row["avg_actual_man_hours"]) * np.random.uniform(0.6, 0.9))),  # Randomly decrease min by 10-30%
                     "avg": float_round(row["avg_actual_man_hours"]),
                     "est": float_round(row["avg_actual_man_hours"])
                 },
