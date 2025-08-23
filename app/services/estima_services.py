@@ -620,14 +620,33 @@ def parts_prediction(cluster_data,sub_task_parts_lhrh):
 
 async def most_probable_defects(aircraft_age: float, aircraft_model_family: List[str], check_category: List[str], customer_name_list: List[str], customer_name_consideration: bool):
     train_packages=packages_extract(aircraft_age,aircraft_model_family,check_category,customer_name_list,customer_name_consideration)
-    sub_task_description_max500mh_lhrh=pd.DataFrame(list(db["sub_task_description_max500mh_lhrh"].find({"package_number": {"$in": train_packages}})))
-    #sub_task_description_max500mh_lhrh=sub_task_description_max500mh_lhrh[sub_task_description_max500mh_lhrh['package_number'].isin(train_packages)]
-    tasks=sub_task_description_max500mh_lhrh["source_task_discrepancy_number_updated"].unique().tolist()
-    defects_list = sub_task_description_max500mh_lhrh["log_item_number"].unique().tolist()
+    sub_task_description_max500mh_lhrh = pd.DataFrame(
+        list(
+            db["sub_task_description_max500mh_lhrh"].find(
+                {
+                    "package_number": {"$in": train_packages},
+                    "source_task_discrepancy_number_updated": {"$regex": r"^\d"}
+                }
+            )
+        )
+    )
+    print("the shape of the description data is",sub_task_description_max500mh_lhrh.shape)
+
+    tasks = sub_task_description_max500mh_lhrh["source_task_discrepancy_number_updated"].dropna().unique().tolist()
+
+
+    print(sub_task_description_max500mh_lhrh.columns)
+    print("the shape of the description data is",sub_task_description_max500mh_lhrh.shape)
+
+    defects_list=sub_task_description_max500mh_lhrh['log_item_number'].unique().tolist()
+    sub_task_description_max500mh_lhrh["new_total_description"] = (
+    sub_task_description_max500mh_lhrh["new_total_description"].fillna("")
+    )
     sub_task_description_max500mh_lhrh=sub_task_description_max500mh_lhrh[['log_item_number',
                 'task_description', 'corrective_action',
             'source_task_discrepancy_number','source_task_discrepancy_number_updated', 'estimated_man_hours', 
-            'actual_man_hours', 'skill_number',"package_number"]]
+            'actual_man_hours', 'skill_number',"package_number",'new_total_description']]
+    print("clustering started")
     cluster_data=compute_cluster(sub_task_description_max500mh_lhrh,tasks)
     sub_task_parts_lhrh = pd.DataFrame(
     list(db["sub_task_parts_lhrh"].find({
@@ -649,15 +668,27 @@ async def most_probable_defects(aircraft_age: float, aircraft_model_family: List
         total_cost=("parts_cost", "sum")
     )
 
+    top_50_parts=top_failing_parts.sort_values(by="total_cost", ascending=False).head(50)
 
-    top_failing_parts = top_failing_parts.sort_values(by="total_cost", ascending=False).head(10)
-        
+    # Step 2: Merge latest billable price info
+    top_50_parts = top_50_parts.merge(
+        parts_master[["issued_part_number", "latest_total_billable_price"]],
+        on="issued_part_number",
+        how="left"
+    )
+
+    # Step 3: From those 50, take top 10 by latest billable price
+    top_failing_parts = (
+        top_50_parts.sort_values(by="latest_total_billable_price", ascending=False)
+        .head(10)
+    )
+    top_failing_parts.drop(columns=['latest_total_billable_price'], inplace=True)
     cluster_manhours_data=manhours_prediction(cluster_data[[
     "source_task_discrepancy_number","full_description",
     "actual_man_hours",
     "skill_number",
     "group",
-    "package_number"
+    "package_number","new_total_description"
     ]])
     findings=[]
     findings_manhours=0
@@ -705,10 +736,10 @@ async def most_probable_defects(aircraft_age: float, aircraft_model_family: List
 
     # Fixed typo: "reliability" not "reliablity"
     reliability_score = (
-        85 if findings_manhours < 1000
-        else 75 if findings_manhours < 3000
-        else 50 if findings_manhours < 5000
-        else 25
+        90 if findings_manhours < 1000
+        else 80 if findings_manhours < 3000
+        else 60 if findings_manhours < 5000
+        else 40
     )
 
 
@@ -919,7 +950,7 @@ async def defect_investigator(task_number: List[str], log_item_number: str, defe
     "actual_man_hours",
     "skill_number",
     "group",
-    "package_number"
+    "package_number","new_total_description"
     ]])
     findings=[]
     findings_manhours=0
