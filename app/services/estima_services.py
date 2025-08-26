@@ -59,6 +59,8 @@ def process_summary(summary: str) -> str:
     """
     Process the summary text by removing unwanted patterns and normalizing it.
     """
+    if summary is None:
+        return ""
     # Remove HMV patterns like HMV24/000206/0924/652
     summary = re.sub(r'HMV\d{2}/\d{6}/\d{4}/\d{3}', ' ', summary)
     summary = re.sub(r'HMV', ' ', summary)
@@ -774,6 +776,9 @@ async def estima_defects_prediction(tasks):
             "findings_manhours": 0.0,
             "findings_spare_parts_cost": 0.0
         }
+        
+    tasks = [task for task in tasks if isinstance(task, str) and task[0].isdigit()]
+
 
     # Convert tasks to a DataFrame
     sub_task_description_max500mh_lhrh = pd.DataFrame(
@@ -795,6 +800,7 @@ async def estima_defects_prediction(tasks):
                 'task_description', 'corrective_action',
             'source_task_discrepancy_number','source_task_discrepancy_number_updated', 'estimated_man_hours', 
             'actual_man_hours', 'skill_number',"package_number","new_total_description"]]
+    
     
     cluster_data = compute_cluster(sub_task_description_max500mh_lhrh, tasks)
     
