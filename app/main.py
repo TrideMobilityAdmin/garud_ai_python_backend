@@ -1,6 +1,7 @@
 from fastapi import FastAPI, APIRouter
 from fastapi.middleware.cors import CORSMiddleware
 from app.api.v1 import routes
+from app.api.v1.maintenance_routes import maintenance_router 
 
 app = FastAPI(
     title="Garud AI APIs",
@@ -9,6 +10,10 @@ app = FastAPI(
 )
 
 app.include_router(routes.router)
+
+# Include new maintenance routes
+app.include_router(maintenance_router)
+
 
 app.add_middleware(
     CORSMiddleware,
