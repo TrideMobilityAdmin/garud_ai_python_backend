@@ -1,36 +1,14 @@
 from pydantic import BaseModel
-from typing import List, Optional, Dict, Any
+from typing import List, Optional
 
 class Task(BaseModel):
     task_number: str
     task_description: str
 
-class MaintenanceTasksInput(BaseModel):
+class PredictRequest(BaseModel):
     tasks: List[Task]
     aircraft_type: str
     aircraft_reg: Optional[str] = None
-
-class MHS(BaseModel):
-    max: float
-    min: float  
-    avg: float
-    est: float
-
-class SparePartDetails(BaseModel):
-    partId: str
-    desc: str
-    qty: float
-    price: float
-    part_type: str
-    prob: float
-
-class TaskDetail(BaseModel):
-    cluster: str
-    description: str
-    skill: List[str]
-    mhs: MHS
-    prob: float
-    spare_parts: List[SparePartDetails]
 
 class TaskResult(BaseModel):
     task_number: str
@@ -42,10 +20,26 @@ class TaskResult(BaseModel):
     best_match_found: str
     matched_description: Optional[str]
     combined_from: List[str]
+    # Removed age_difference and matched_age as requested
 
-class MaintenanceTaskResponse(BaseModel):
+class PredictResponse(BaseModel):
     results: List[TaskResult]
     processing_time_ms: int
     embedding_time_ms: int
     task_processing_time_ms: int
     total_tasks: int
+    available_tasks: int
+    total_available_mhs: float
+
+class HealthResponse(BaseModel):
+    status: str
+    model_loaded: bool
+    special_tasks_loaded: bool
+    ad_sb_loaded: bool
+    combination_recipes_loaded: bool
+    precomputed_matrices: int
+    aircraft_types: List[str]
+    total_special_tasks: int
+    total_ad_sb_tasks: int
+    total_recipes: int
+    cache_info: dict
